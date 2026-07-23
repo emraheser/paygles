@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+aiosqlite
+scrapling
+curl_cffi
+browserforge
+APScheduler
+python-dotenv
+pydantic
+pydantic-settings
+telethon

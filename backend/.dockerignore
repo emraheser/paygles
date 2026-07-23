@@ -1,0 +1,7 @@
+paygles-env/
+__pycache__/
+*.pyc
+.env
+paygles.db
+*.session
+.git/
