@@ -142,10 +142,11 @@ def _run_schema_upgrades(sync_conn):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Setup Database tables (SQLite)
+    # Setup database tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_run_schema_upgrades)
+        if conn.dialect.name == "sqlite":
+            await conn.run_sync(_run_schema_upgrades)
         
     # Start APScheduler Jobs
     await start_scheduler()

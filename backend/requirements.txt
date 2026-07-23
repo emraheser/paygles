@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 SQLAlchemy
 aiosqlite
+asyncpg
 scrapling
 curl_cffi
 browserforge

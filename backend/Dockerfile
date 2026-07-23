@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 
 COPY . .
 
-# Cloud Run injects PORT env var (default 8080)
+# Container runtime port (default 8080)
 ENV PORT=8080
 ENV PLAYWRIGHT_BROWSERS_PATH=0
 

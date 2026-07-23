@@ -9,16 +9,20 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(_BACKEND_ROOT / ".env")
 
-sqlite_path = (os.getenv("SQLITE_PATH", "") or "./paygles.db").strip()
-sqlite_file = Path(sqlite_path)
-if not sqlite_file.is_absolute():
-    sqlite_file = (_BACKEND_ROOT / sqlite_file).resolve()
-sqlite_file.parent.mkdir(parents=True, exist_ok=True)
-DATABASE_URL = f"sqlite+aiosqlite:///{sqlite_file}"
+database_url_env = (os.getenv("DATABASE_URL", "") or "").strip()
+if database_url_env:
+    DATABASE_URL = database_url_env
+    _is_sqlite = DATABASE_URL.startswith("sqlite")
+else:
+    sqlite_path = (os.getenv("SQLITE_PATH", "") or "./paygles.db").strip()
+    sqlite_file = Path(sqlite_path)
+    if not sqlite_file.is_absolute():
+        sqlite_file = (_BACKEND_ROOT / sqlite_file).resolve()
+    sqlite_file.parent.mkdir(parents=True, exist_ok=True)
+    DATABASE_URL = f"sqlite+aiosqlite:///{sqlite_file}"
+    _is_sqlite = True
 
-_is_sqlite = True
-
-connect_args: dict = {"check_same_thread": False}
+connect_args: dict = {"check_same_thread": False} if _is_sqlite else {}
 
 engine = create_async_engine(
     DATABASE_URL,

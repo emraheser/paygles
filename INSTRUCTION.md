@@ -16,7 +16,7 @@ Ana amaç: yeni açılan fırsat konularını hızlı yakalamak, temiz başlık/
 
 - Backend: FastAPI + SQLAlchemy Async + APScheduler
 - Frontend: React + Vite + Tailwind + shadcn/ui
-- DB: SQLite (`paygles.db`) — `SQLITE_PATH` env ile yol değiştirilebilir.
+- DB: Varsayılan PostgreSQL (`DATABASE_URL`) — opsiyonel SQLite fallback (`SQLITE_PATH`).
 - Scheduler: App açılışında hemen 1 kez çalışır, sonra interval’e göre döner
 
 Ana backend modülleri:
@@ -177,7 +177,8 @@ Zorunlu / kritik:
 
 Opsiyonel:
 - `TELEGRAM_CHAT_ID`
-- `SQLITE_PATH` (default `./paygles.db`)
+- `DATABASE_URL` (örn. `postgresql+asyncpg://user:pass@host:5432/db`)
+- `SQLITE_PATH` (opsiyonel fallback, default `./paygles.db`)
 - `TELEGRAM_API_ID`
 - `TELEGRAM_API_HASH`
 - `OLLAMA_BASE_URL`
