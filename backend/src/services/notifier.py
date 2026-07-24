@@ -4,13 +4,14 @@ import logging
 import os
 import re
 from datetime import datetime
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 from html import escape
 from urllib.parse import urlencode, urlparse, urlunparse, urljoin
 from urllib.request import Request, urlopen
 
 from scrapling import Fetcher
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -42,6 +43,24 @@ _OG_URL_RE = re.compile(
     r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
+
+
+def _env_flag_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ai_enhanced_mode_enabled() -> bool:
+    return _env_flag_enabled("AI_ENHANCED_MODE", default=False)
+
+
+def _ai_enhanced_lookback_hours() -> int:
+    raw = (os.getenv("AI_ENHANCED_LOOKBACK_HOURS", "24") or "24").strip()
+    if not raw.isdigit():
+        return 24
+    return max(1, min(168, int(raw)))
 
 
 def normalize_deal_url(url: str) -> str:
@@ -1021,6 +1040,20 @@ def _pick_best_title(raw_title: str, ai_title: str | None) -> str:
     return cleaned_ai
 
 
+def _should_replace_title(existing_title: str | None, candidate_title: str | None) -> bool:
+    candidate = _sanitize_outgoing_text(candidate_title)
+    if not candidate or _is_non_product_title(candidate):
+        return False
+    existing = _sanitize_outgoing_text(existing_title)
+    if not existing:
+        return True
+    if existing.lower() == candidate.lower():
+        return False
+    if _is_junk_title(existing) or _is_non_product_title(existing):
+        return True
+    return False
+
+
 async def build_deal_metadata_for_new_record(
     deal_url: str,
     source_title: str | None = None,
@@ -1055,34 +1088,47 @@ async def fill_missing_deal_data(db: AsyncSession, batch_size: int = 10) -> int:
     - No deal_price (but title exists in forum post or deal_title)
     - Unresolved short URLs (app.hb.biz, ty.gl, etc.) in clean_deal_url
     """
+    enhanced_mode = _ai_enhanced_mode_enabled()
+    enhanced_cutoff = datetime.utcnow() - timedelta(hours=_ai_enhanced_lookback_hours())
+
+    missing_or_junk_filter = or_(
+        # Missing or junk deal_title
+        ScrapedTopic.deal_title.is_(None),
+        ScrapedTopic.deal_title == "",
+        ScrapedTopic.deal_title.like("Just a moment%"),
+        ScrapedTopic.deal_title.like("Attention Required%"),
+        ScrapedTopic.deal_title.like("Access Denied%"),
+        ScrapedTopic.deal_title.like("%503%"),
+        ScrapedTopic.deal_title.ilike("%service unavailable%"),
+        ScrapedTopic.deal_title.ilike("%hizmet kullanılamıyor%"),
+        ScrapedTopic.deal_title.like("Bu bir başlık%"),
+        ScrapedTopic.deal_title.ilike("%watch this story%"),
+        ScrapedTopic.deal_title.ilike("%resim yükle%"),
+        ScrapedTopic.deal_title.ilike("%ürünleri, indirimleri ve kampanyaları%"),
+        # Missing deal_price
+        ScrapedTopic.deal_price.is_(None),
+        ScrapedTopic.deal_price == "",
+        ScrapedTopic.deal_price == "0",
+        ScrapedTopic.deal_price == "0,0",
+        ScrapedTopic.deal_price == "0,00",
+    )
+
+    review_filter = missing_or_junk_filter
+    if enhanced_mode:
+        review_filter = or_(
+            missing_or_junk_filter,
+            and_(
+                ScrapedTopic.notification_sent == False,
+                ScrapedTopic.scraped_at >= enhanced_cutoff,
+            ),
+        )
+
     stmt = (
         select(ScrapedTopic)
         .where(ScrapedTopic.deal_url.isnot(None))
         .where(ScrapedTopic.deal_url != "")
         .where(ScrapedTopic.domain_skipped == False)
-        .where(
-            or_(
-                # Missing or junk deal_title
-                ScrapedTopic.deal_title.is_(None),
-                ScrapedTopic.deal_title == "",
-                ScrapedTopic.deal_title.like("Just a moment%"),
-                ScrapedTopic.deal_title.like("Attention Required%"),
-                ScrapedTopic.deal_title.like("Access Denied%"),
-                ScrapedTopic.deal_title.like("%503%"),
-                ScrapedTopic.deal_title.ilike("%service unavailable%"),
-                ScrapedTopic.deal_title.ilike("%hizmet kullanılamıyor%"),
-                ScrapedTopic.deal_title.like("Bu bir başlık%"),
-                ScrapedTopic.deal_title.ilike("%watch this story%"),
-                ScrapedTopic.deal_title.ilike("%resim yükle%"),
-                ScrapedTopic.deal_title.ilike("%ürünleri, indirimleri ve kampanyaları%"),
-                # Missing deal_price
-                ScrapedTopic.deal_price.is_(None),
-                ScrapedTopic.deal_price == "",
-                ScrapedTopic.deal_price == "0",
-                ScrapedTopic.deal_price == "0,0",
-                ScrapedTopic.deal_price == "0,00",
-            )
-        )
+        .where(review_filter)
         .where(ScrapedTopic.is_sticky == False)
         .where(ScrapedTopic.deleted_by_user == False)
         .order_by(ScrapedTopic.id.desc())
@@ -1093,6 +1139,12 @@ async def fill_missing_deal_data(db: AsyncSession, batch_size: int = 10) -> int:
         return 0
 
     has_ai = bool(os.getenv("OPENROUTER_API_KEY", "").strip())
+    if enhanced_mode and has_ai:
+        logger.info(
+            "fill_missing_deal_data: AI enhanced mode enabled (lookback=%sh, batch=%s)",
+            _ai_enhanced_lookback_hours(),
+            batch_size,
+        )
     ai_failed = False
 
     fixed = 0
@@ -1117,8 +1169,10 @@ async def fill_missing_deal_data(db: AsyncSession, batch_size: int = 10) -> int:
                 fixed += 1
             continue
 
-        # Attempt page fetch only if we need title or URL resolution
-        if needs_title or needs_url:
+        force_ai_review = enhanced_mode and has_ai and not ai_failed
+
+        # Attempt page fetch for missing fields, URL resolution, or enhanced AI review.
+        if needs_title or needs_url or force_ai_review:
             url = normalize_deal_url(topic.deal_url)
             found_title, found_price, resolved_url = await asyncio.to_thread(
                 _fetch_page_metadata, url, topic.title
@@ -1138,19 +1192,19 @@ async def fill_missing_deal_data(db: AsyncSession, batch_size: int = 10) -> int:
                 changed = True
 
             # Update title
-            if found_title and needs_title:
+            if found_title and (needs_title or force_ai_review):
+                selected_title = found_title
                 if has_ai and not ai_failed:
                     ai_title = await asyncio.to_thread(_extract_title_with_ai, found_title)
                     if ai_title:
-                        topic.deal_title = _pick_best_title(found_title, ai_title)
-                        changed = True
-                        needs_title = False
+                        selected_title = _pick_best_title(found_title, ai_title)
                     else:
                         ai_failed = True
-                if needs_title:
-                    topic.deal_title = found_title
+
+                if _should_replace_title(topic.deal_title, selected_title):
+                    topic.deal_title = selected_title
                     changed = True
-                    needs_title = False
+                needs_title = not bool((topic.deal_title or "").strip())
 
         # Fallback: use forum title if we still have no deal_title
         if needs_title and topic.title:

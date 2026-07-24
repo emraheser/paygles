@@ -183,6 +183,8 @@ Opsiyonel:
 - `TELEGRAM_API_HASH`
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
+- `AI_ENHANCED_MODE` (`true/false`, default `false`)
+- `AI_ENHANCED_LOOKBACK_HOURS` (default `24`)
 
 ---
 
