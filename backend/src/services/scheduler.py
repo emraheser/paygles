@@ -9,12 +9,18 @@ from src.models.domain import AppSetting
 from src.services.notifier import send_unsent_topic_notifications, fill_missing_deal_data
 from src.services.scraper import ScraperService
 from src.services.telegram_reader import TelegramReaderService
+from src.services.product_tracker import (
+    DEFAULT_PRODUCT_CHECK_INTERVAL_MINUTES,
+    PRODUCT_CHECK_INTERVAL_SETTING_KEY,
+    check_all_tracked_products,
+)
 
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 MAIN_JOB_ID = "main_scrape_job"
 BACKFILL_JOB_ID = "backfill_job"
+PRODUCT_TRACKING_JOB_ID = "product_tracking_job"
 BACKFILL_INTERVAL_MINUTES = 15
 
 
@@ -65,6 +71,16 @@ async def get_scrape_interval_minutes(session) -> int:
     return 1  # Default 1 min
 
 
+async def get_product_check_interval_minutes(session) -> int:
+    result = await session.execute(
+        select(AppSetting).where(AppSetting.key == PRODUCT_CHECK_INTERVAL_SETTING_KEY)
+    )
+    setting = result.scalar_one_or_none()
+    if setting and setting.value.isdigit():
+        return max(1, min(1440, int(setting.value)))
+    return DEFAULT_PRODUCT_CHECK_INTERVAL_MINUTES
+
+
 def _upsert_main_job(interval_minutes: int) -> None:
     scheduler.add_job(
         scheduled_scrape_task,
@@ -91,6 +107,34 @@ def _upsert_backfill_job() -> None:
     )
 
 
+def _upsert_product_tracking_job(interval_minutes: int) -> None:
+    scheduler.add_job(
+        scheduled_product_tracking_task,
+        "interval",
+        minutes=interval_minutes,
+        id=PRODUCT_TRACKING_JOB_ID,
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=60,
+    )
+
+
+async def scheduled_product_tracking_task():
+    logger.info("Executing tracked product price check.")
+    async with AsyncSessionLocal() as session:
+        detected_drops = await check_all_tracked_products(session)
+        await _upsert_setting(
+            session,
+            "last_product_check_completed_at",
+            datetime.utcnow().isoformat(),
+            "Last tracked product price check completion time in UTC",
+        )
+        await session.commit()
+        if detected_drops:
+            logger.info("Tracked product price drops detected: %s", detected_drops)
+
+
 async def scheduled_backfill_task():
     """Lower-frequency task for expensive metadata backfills."""
     logger.info("Executing backfill job.")
@@ -110,12 +154,15 @@ async def start_scheduler():
     """Called on app startup to attach jobs to APScheduler"""
     async with AsyncSessionLocal() as session:
         interval_minutes = await get_scrape_interval_minutes(session)
+        product_interval_minutes = await get_product_check_interval_minutes(session)
 
     _upsert_main_job(interval_minutes)
     _upsert_backfill_job()
+    _upsert_product_tracking_job(product_interval_minutes)
     if not scheduler.running:
         scheduler.start()
     asyncio.create_task(scheduled_scrape_task())
+    asyncio.create_task(scheduled_product_tracking_task())
     logger.info(f"Scheduler started with interval of {interval_minutes} minutes.")
 
 
@@ -126,6 +173,14 @@ async def refresh_scheduler_interval():
 
     _upsert_main_job(interval_minutes)
     logger.info("Scheduler interval refreshed to %s minutes.", interval_minutes)
+
+
+async def refresh_product_tracking_interval():
+    async with AsyncSessionLocal() as session:
+        interval_minutes = await get_product_check_interval_minutes(session)
+
+    _upsert_product_tracking_job(interval_minutes)
+    logger.info("Product tracking interval refreshed to %s minutes.", interval_minutes)
 
 
 async def stop_scheduler():

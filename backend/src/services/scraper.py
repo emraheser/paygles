@@ -122,7 +122,13 @@ class ScraperService:
                     if existing_topic.deleted_by_user:
                         continue
                     changed = False
-                    if not is_future_date and existing_topic.source_date != source_date:
+                    if (
+                        not is_future_date
+                        and (
+                            existing_topic.source_date is None
+                            or source_date < existing_topic.source_date
+                        )
+                    ):
                         existing_topic.source_date = source_date
                         changed = True
                     if source_topic_id and existing_topic.source_topic_id != source_topic_id:
@@ -342,40 +348,49 @@ class ScraperService:
         return self._parse_source_text(node.text)
 
     def _extract_source_date(self, node, date_selector: str | None) -> datetime | None:
-        selectors = [
-            ".structItem-cell--latest time",
-            ".structItem-latestDate time",
-            ".structItem-cell--latest .u-dt",
-            ".structItem-cell--latest time[datetime]",
-        ]
+        creation_selectors = []
         if date_selector:
-            selectors.append(date_selector)
-        selectors.extend(
+            creation_selectors.append(date_selector)
+        creation_selectors.extend(
             [
+                ".structItem-startDate time",
                 ".structItem-cell--main .structItem-startDate time",
                 ".structItem-cell--main .structItem-minor .structItem-startDate time",
                 ".structItem-cell--main .structItem-minor time.u-dt",
                 ".structItem-cell--main .structItem-minor time[datetime]",
             ]
         )
+        latest_selectors = [
+            ".structItem-cell--latest time",
+            ".structItem-latestDate",
+            ".structItem-cell--latest .u-dt",
+            ".structItem-cell--latest time[datetime]",
+        ]
 
-        candidates: list[datetime] = []
-        for selector in selectors:
-            nodes = node.css(selector)
-            if not nodes:
-                continue
-
-            for candidate in nodes:
-                parsed = self._parse_source_node(candidate)
-                if parsed:
-                    candidates.append(parsed)
+        def _collect_dates(selectors: list[str]) -> list[datetime]:
+            candidates: list[datetime] = []
+            for selector in selectors:
+                nodes = node.css(selector)
+                if not nodes:
                     continue
-                if selector == date_selector:
-                    parsed_from_text = self._parse_source_text(candidate.text)
-                    if parsed_from_text:
-                        candidates.append(parsed_from_text)
 
-        return max(candidates) if candidates else None
+                for candidate in nodes:
+                    parsed = self._parse_source_node(candidate)
+                    if parsed:
+                        candidates.append(parsed)
+                        continue
+                    if selector == date_selector:
+                        parsed_from_text = self._parse_source_text(candidate.text)
+                        if parsed_from_text:
+                            candidates.append(parsed_from_text)
+            return candidates
+
+        creation_dates = _collect_dates(creation_selectors)
+        if creation_dates:
+            return min(creation_dates)
+
+        latest_dates = _collect_dates(latest_selectors)
+        return min(latest_dates) if latest_dates else None
 
     @staticmethod
     def _is_sticky_topic(node) -> bool:

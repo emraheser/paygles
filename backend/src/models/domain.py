@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, BigInteger
 from src.database import Base
 
 class TargetSite(Base):
@@ -68,3 +68,21 @@ class AllowedDomain(Base):
     domain = Column(String(200), nullable=False, unique=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TrackedProduct(Base):
+    __tablename__ = "tracked_products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(500), nullable=False)
+    url = Column(String(1500), nullable=False, unique=True)
+    store_name = Column(String(200), nullable=False)
+    initial_price_cents = Column(BigInteger, nullable=False)
+    current_price_cents = Column(BigInteger, nullable=False)
+    lowest_price_cents = Column(BigInteger, nullable=False)
+    last_notified_price_cents = Column(BigInteger, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -99,6 +99,26 @@ def _sanitize_outgoing_text(value: str | None) -> str:
     return cleaned
 
 
+_TRAILING_TITLE_PRICE_RE = re.compile(
+    r"\s*(?:[-–—|:]\s*)?(?:(?:TL|₺)\s*\d[\d.,\s]*|\d[\d.,\s]*\s*(?:TL|₺))\s*$",
+    re.IGNORECASE,
+)
+
+
+def normalize_deal_title(value: str | None) -> str:
+    """Remove trailing currency prices without touching product model numbers."""
+    original = _sanitize_outgoing_text(value)
+    if not original:
+        return ""
+
+    cleaned = original
+    while True:
+        normalized = _TRAILING_TITLE_PRICE_RE.sub("", cleaned).rstrip(" -–—|:")
+        if not normalized or normalized == cleaned:
+            return cleaned if normalized else original
+        cleaned = normalized
+
+
 def normalize_deal_price(value: str | None) -> str | None:
     if not value:
         return None
@@ -188,7 +208,7 @@ class TelegramNotifier:
             preferred_title = topic.title if _is_junk_title(candidate_deal_title) else candidate_deal_title
         if not preferred_title:
             preferred_title = topic.title
-        outgoing_title = _sanitize_outgoing_text(preferred_title)
+        outgoing_title = normalize_deal_title(preferred_title)
         outgoing_price = normalize_deal_price(getattr(topic, "deal_price", None))
         if not outgoing_price:
             outgoing_price = "-"
@@ -218,6 +238,51 @@ class TelegramNotifier:
 
         if not result.get("ok"):
             logger.warning("Telegram send rejected for topic id=%s: %s", topic.id, result)
+            return False
+        return True
+
+    async def send_price_drop(
+        self,
+        title: str,
+        link_url: str,
+        store_name: str,
+        initial_price: str,
+        current_price: str,
+    ) -> bool:
+        if not self.token:
+            if not self._warned_missing_token:
+                logger.warning("Telegram notifier disabled: TELEGRAM_BOT_TOKEN is missing.")
+                self._warned_missing_token = True
+            return False
+
+        chat_id = await self._resolve_chat_id()
+        if not chat_id:
+            return False
+
+        text = (
+            "<b>Fiyat düştü</b>\n\n"
+            f"<b>{escape(normalize_deal_title(title))}</b>\n"
+            f"Güncel fiyat: <b>{escape(current_price)}</b>\n"
+            f"Takibe alınan fiyat: <s>{escape(initial_price)}</s>\n"
+            f"Mağaza: {escape(store_name)}"
+        )
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "false",
+            "reply_markup": json.dumps(
+                {"inline_keyboard": [[{"text": "Ürünü Gör", "url": link_url}]]}
+            ),
+        }
+        try:
+            result = await asyncio.to_thread(self._post_form, "sendMessage", payload)
+        except Exception as exc:
+            logger.warning("Telegram price-drop notification failed for %s: %s", link_url, exc)
+            return False
+
+        if not result.get("ok"):
+            logger.warning("Telegram price-drop notification rejected: %s", result)
             return False
         return True
 
@@ -675,7 +740,7 @@ def _clean_page_title(raw_title: str) -> str:
     for pattern in _SUFFIX_PATTERNS:
         title = _re.sub(pattern, "", title, flags=_re.IGNORECASE).strip()
     title = _re.sub(r"\s*[-–—|]+\s*$", "", title).strip()
-    return title
+    return normalize_deal_title(title)
 
 
 def _format_int_with_thousands(value: str) -> str:
@@ -845,12 +910,108 @@ def _extract_price_from_n11_html(html: str) -> str | None:
     return _pick_lowest_normalized_price(candidates)
 
 
+def _extract_price_from_hepsiburada_html(html: str) -> str | None:
+    """Extract Hepsiburada price with strict priority: discounted/current > regular/list."""
+    # Prefer explicit buybox winner price block when present.
+    # On discounted pages non-segmented-price can be lower than finalPriceOnSale,
+    # on non-discounted pages they are usually equal.
+    buybox_primary_candidates: list[str] = []
+    buybox_triplet_pattern = (
+        r'buyboxOrder[^0-9]{0,20}([0-9]+)'
+        r'.{0,2400}?finalPriceOnSale[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)'
+        r'.{0,1800}?non-segmented-price[^0-9]{0,40}([0-9]+(?:\.[0-9]+)?)'
+    )
+    for buybox_order_raw, sale_raw, non_segmented_raw in re.findall(
+        buybox_triplet_pattern,
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        if buybox_order_raw != "1":
+            continue
+        sale_normalized = _normalize_price_text(sale_raw)
+        non_segmented_normalized = _normalize_price_text(non_segmented_raw)
+        sale_value = _to_price_number(sale_normalized)
+        non_segmented_value = _to_price_number(non_segmented_normalized)
+
+        if sale_value is None and non_segmented_value is None:
+            continue
+        if sale_value is None:
+            buybox_primary_candidates.append(non_segmented_raw)
+            continue
+        if non_segmented_value is None:
+            buybox_primary_candidates.append(sale_raw)
+            continue
+
+        # If basket (non-segmented) is lower, use it; otherwise use the buybox sale price.
+        if 0 < non_segmented_value <= sale_value:
+            buybox_primary_candidates.append(non_segmented_raw)
+        elif sale_value > 0:
+            buybox_primary_candidates.append(sale_raw)
+
+    picked_buybox_primary = _pick_lowest_normalized_price(buybox_primary_candidates)
+    if picked_buybox_primary:
+        return picked_buybox_primary
+
+    discounted_candidates: list[str] = []
+    current_candidates: list[str] = []
+    regular_candidates: list[str] = []
+
+    discounted_patterns = [
+        r'"name"\s*:\s*"non-segmented-price"\s*,\s*"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"finalPriceOnSale"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"discountedPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"discountedPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"campaignPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"campaignPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+    ]
+    current_patterns = [
+        r'"finalPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"finalPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"currentPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"currentPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"salePrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"salePrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'data-test-id=["\']price-current-price["\'][^>]*>[^0-9]*([0-9][0-9\., ]*)',
+    ]
+    regular_patterns = [
+        r'"finalPriceOnDisplay"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"originalPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"originalPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"listPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"listPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"oldPrice"\s*:\s*"([0-9][0-9\., ]*)\s*(?:TL|₺)?"',
+        r'"oldPrice"\s*:\s*\{[^{}]*?"value"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'data-test-id=["\']price-old-price["\'][^>]*>[^0-9]*([0-9][0-9\., ]*)',
+    ]
+
+    for pattern in discounted_patterns:
+        discounted_candidates.extend(re.findall(pattern, html, flags=re.IGNORECASE | re.DOTALL))
+    for pattern in current_patterns:
+        current_candidates.extend(re.findall(pattern, html, flags=re.IGNORECASE | re.DOTALL))
+    for pattern in regular_patterns:
+        regular_candidates.extend(re.findall(pattern, html, flags=re.IGNORECASE | re.DOTALL))
+
+    # Business rule: prefer discounted price when present, then current/final price,
+    # and only then fallback to original/list/old price.
+    for candidates in (discounted_candidates, current_candidates, regular_candidates):
+        picked = _pick_lowest_normalized_price(candidates)
+        if picked:
+            return picked
+
+    return None
+
+
 def _extract_price_from_html(html: str, page_url: str | None = None) -> str | None:
     hostname = (urlparse(page_url).hostname or "").lower() if page_url else ""
     if "n11.com" in hostname:
         n11_price = _extract_price_from_n11_html(html)
         if n11_price:
             return n11_price
+
+    if "hepsiburada.com" in hostname:
+        hepsiburada_price = _extract_price_from_hepsiburada_html(html)
+        if hepsiburada_price:
+            return hepsiburada_price
 
     # Trendyol datalayer: product_discounted_price is the most accurate (actual checkout price)
     m = re.search(r'"product_discounted_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)', html)
