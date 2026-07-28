@@ -4,6 +4,7 @@ import {
     AlertCircle,
     ArrowDownRight,
     CheckCircle2,
+    ChevronDown,
     Clock3,
     ExternalLink,
     LoaderCircle,
@@ -72,6 +73,7 @@ export function ProductTrackingPanel() {
     const [checkingProductId, setCheckingProductId] = useState<number | null>(null);
     const [mutatingProductId, setMutatingProductId] = useState<number | null>(null);
     const [confirmingDeleteProductId, setConfirmingDeleteProductId] = useState<number | null>(null);
+    const [isListExpanded, setIsListExpanded] = useState(false);
     const lastCheckCompletedRef = useRef<string | null>(null);
 
     const fetchProducts = useCallback(async () => {
@@ -134,6 +136,7 @@ export function ProductTrackingPanel() {
         try {
             const product = await api.post<TrackedProduct>("/dashboard/tracked-products", { url });
             setProducts((current) => [product, ...current]);
+            setIsListExpanded(true);
             setProductUrl("");
             setFeedback({ type: "success", text: "Ürün takibe alındı." });
         } catch (error) {
@@ -311,12 +314,21 @@ export function ProductTrackingPanel() {
             )}
 
             <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <button
+                    type="button"
+                    onClick={() => setIsListExpanded((current) => !current)}
+                    className="flex w-full items-center justify-between rounded-md px-1 py-1 text-left"
+                    aria-expanded={isListExpanded}
+                    aria-controls="tracked-products-list"
+                >
                     <h2 className="text-sm font-bold text-stone-900">Takip listesi</h2>
-                    <span className="text-xs font-medium text-stone-500">{products.length} ürün</span>
-                </div>
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-500">
+                        {products.length} ürün
+                        <ChevronDown className={`h-4 w-4 transition-transform ${isListExpanded ? "rotate-180" : ""}`} />
+                    </span>
+                </button>
 
-                {loading ? (
+                {isListExpanded && (loading ? (
                     <div className="surface-panel flex h-28 items-center justify-center rounded-lg">
                         <LoaderCircle className="h-5 w-5 animate-spin text-emerald-700" />
                     </div>
@@ -326,81 +338,90 @@ export function ProductTrackingPanel() {
                         <p className="text-sm font-semibold text-stone-700">Takip edilen ürün yok</p>
                     </div>
                 ) : (
-                    products.map((product, index) => {
-                        const priceDropped = product.current_price_cents < product.initial_price_cents;
-                        const isMutating = mutatingProductId === product.id;
-                        return (
-                            <motion.article
-                                key={product.id}
-                                initial={{ opacity: 0, y: 8 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ delay: Math.min(index * 0.04, 0.2) }}
-                                className={`deal-card-pro grid gap-4 rounded-lg p-4 md:grid-cols-[minmax(0,1fr)_190px_auto] md:items-center ${
-                                    priceDropped ? "border-emerald-300" : "border-stone-200"
-                                } ${product.is_active ? "" : "opacity-60"}`}
-                            >
-                                <div className="min-w-0">
-                                    <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                                        <span className="rounded-md bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600">{product.store_name}</span>
-                                        {priceDropped && (
-                                            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-800">
-                                                <ArrowDownRight className="h-3 w-3" /> %{product.discount_percent} düştü
-                                            </span>
-                                        )}
-                                        {product.last_error && (
-                                            <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700">
-                                                <AlertCircle className="h-3 w-3" /> Kontrol hatası
-                                            </span>
-                                        )}
-                                    </div>
-                                    <a href={product.url} target="_blank" rel="noreferrer" className="block truncate text-[15px] font-bold text-stone-900 hover:text-emerald-800">
-                                        {product.title}
-                                    </a>
-                                    <p className="mt-1 flex items-center gap-1 text-[11px] text-stone-500" title={product.last_error || undefined}>
-                                        <Clock3 className="h-3 w-3 shrink-0" /> Son kontrol {timeAgo(product.last_checked_at)}
-                                    </p>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-3 md:block md:text-right">
-                                    <div>
-                                        <p className="text-[10px] font-bold uppercase text-stone-400">Güncel</p>
-                                        <p className={`mt-0.5 text-xl font-extrabold ${priceDropped ? "text-emerald-700" : "text-stone-900"}`}>
-                                            {product.current_price}
+                    <div id="tracked-products-list" className="space-y-2">
+                        {products.map((product, index) => {
+                            const priceDropped = product.current_price_cents < product.initial_price_cents;
+                            const isMutating = mutatingProductId === product.id;
+                            return (
+                                <motion.article
+                                    key={product.id}
+                                    initial={{ opacity: 0, y: 8 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: Math.min(index * 0.04, 0.2) }}
+                                    className={`deal-card-pro grid gap-4 rounded-lg p-4 md:grid-cols-[minmax(0,1fr)_190px_auto] md:items-center ${
+                                        priceDropped ? "border-emerald-300" : "border-stone-200"
+                                    } ${product.is_active ? "" : "opacity-60"}`}
+                                >
+                                    <div className="min-w-0">
+                                        <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                                            <span className="rounded-md bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600">{product.store_name}</span>
+                                            {priceDropped && (
+                                                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-800">
+                                                    <ArrowDownRight className="h-3 w-3" /> %{product.discount_percent} düştü
+                                                </span>
+                                            )}
+                                            {product.last_error && (
+                                                <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700">
+                                                    <AlertCircle className="h-3 w-3" /> Kontrol hatası
+                                                </span>
+                                            )}
+                                        </div>
+                                        <a href={product.url} target="_blank" rel="noreferrer" className="block truncate text-[15px] font-bold text-stone-900 hover:text-emerald-800">
+                                            {product.title}
+                                        </a>
+                                        <p className="mt-1 flex items-center gap-1 text-[11px] text-stone-500" title={product.last_error || undefined}>
+                                            <Clock3 className="h-3 w-3 shrink-0" /> Son kontrol {timeAgo(product.last_checked_at)}
                                         </p>
+                                        <a
+                                            href={product.akakce_url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 text-[11px] font-bold text-amber-900 transition hover:bg-amber-100"
+                                            title="Akakçe'de ara"
+                                            aria-label="Akakçe'de ara"
+                                        >
+                                            <Search className="h-3.5 w-3.5" /> Akakçe'de ara
+                                        </a>
                                     </div>
-                                    <p className="text-[10px] text-stone-500 md:mt-1">Başlangıç {product.initial_price}</p>
-                                </div>
 
-                                <div className="flex h-9 items-center justify-end gap-1">
-                                    <button
-                                        type="button"
-                                        role="switch"
-                                        aria-checked={product.is_active}
-                                        aria-label={product.is_active ? "Takibi duraklat" : "Takibi başlat"}
-                                        title={product.is_active ? "Takibi duraklat" : "Takibi başlat"}
-                                        onClick={() => handleToggleProduct(product.id)}
-                                        disabled={isMutating}
-                                        className={`relative h-6 w-11 rounded-full transition ${product.is_active ? "bg-emerald-600" : "bg-stone-300"}`}
-                                    >
-                                        <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${product.is_active ? "translate-x-5" : "translate-x-0"}`} />
-                                    </button>
-                                    <button type="button" onClick={() => handleCheckProduct(product.id)} disabled={checkingProductId === product.id} title="Şimdi kontrol et" aria-label="Şimdi kontrol et" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 text-stone-600 transition hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-50">
-                                        <RefreshCw className={`h-4 w-4 ${checkingProductId === product.id ? "animate-spin" : ""}`} />
-                                    </button>
-                                    <a href={product.akakce_url} target="_blank" rel="noreferrer" title="Akakçe'de karşılaştır" aria-label="Akakçe'de karşılaştır" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-amber-300 bg-amber-50 text-amber-900 transition hover:bg-amber-100">
-                                        <Search className="h-4 w-4" />
-                                    </a>
-                                    <a href={product.url} target="_blank" rel="noreferrer" title="Ürünü aç" aria-label="Ürünü aç" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 text-stone-600 transition hover:border-stone-400 hover:text-stone-900">
-                                        <ExternalLink className="h-4 w-4" />
-                                    </a>
-                                    <button type="button" onClick={() => handleDeleteProduct(product.id)} disabled={isMutating || confirmingDeleteProductId === product.id} title="Takipten sil" aria-label="Takipten sil" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 text-stone-500 transition hover:border-rose-300 hover:text-rose-600 disabled:opacity-50">
-                                        {isMutating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                                    </button>
-                                </div>
-                            </motion.article>
-                        );
-                    })
-                )}
+                                    <div className="grid grid-cols-2 gap-3 md:block md:text-right">
+                                        <div>
+                                            <p className="text-[10px] font-bold uppercase text-stone-400">Güncel</p>
+                                            <p className={`mt-0.5 text-xl font-extrabold ${priceDropped ? "text-emerald-700" : "text-stone-900"}`}>
+                                                {product.current_price}
+                                            </p>
+                                        </div>
+                                        <p className="text-[10px] text-stone-500 md:mt-1">Başlangıç {product.initial_price}</p>
+                                    </div>
+
+                                    <div className="flex h-9 items-center justify-end gap-1">
+                                        <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={product.is_active}
+                                            aria-label={product.is_active ? "Takibi duraklat" : "Takibi başlat"}
+                                            title={product.is_active ? "Takibi duraklat" : "Takibi başlat"}
+                                            onClick={() => handleToggleProduct(product.id)}
+                                            disabled={isMutating}
+                                            className={`relative h-6 w-11 rounded-full transition ${product.is_active ? "bg-emerald-600" : "bg-stone-300"}`}
+                                        >
+                                            <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${product.is_active ? "translate-x-5" : "translate-x-0"}`} />
+                                        </button>
+                                        <button type="button" onClick={() => handleCheckProduct(product.id)} disabled={checkingProductId === product.id} title="Şimdi kontrol et" aria-label="Şimdi kontrol et" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 text-stone-600 transition hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-50">
+                                            <RefreshCw className={`h-4 w-4 ${checkingProductId === product.id ? "animate-spin" : ""}`} />
+                                        </button>
+                                        <a href={product.url} target="_blank" rel="noreferrer" title="Ürünü aç" aria-label="Ürünü aç" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 text-stone-600 transition hover:border-stone-400 hover:text-stone-900">
+                                            <ExternalLink className="h-4 w-4" />
+                                        </a>
+                                        <button type="button" onClick={() => handleDeleteProduct(product.id)} disabled={isMutating || confirmingDeleteProductId === product.id} title="Takipten sil" aria-label="Takipten sil" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 text-stone-500 transition hover:border-rose-300 hover:text-rose-600 disabled:opacity-50">
+                                            {isMutating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                        </button>
+                                    </div>
+                                </motion.article>
+                            );
+                        })}
+                    </div>
+                ))}
             </div>
         </section>
     );

@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.exc import IntegrityError
 
 from src.database import get_db
@@ -105,6 +105,13 @@ async def list_recent_topics(db: DbDep, limit: int = 50):
         .join(TargetSite, TargetSite.id == ScrapedTopic.site_id)
         .where(ScrapedTopic.is_sticky == False)
         .where(ScrapedTopic.deleted_by_user == False)
+        .where(
+            or_(
+                TargetSite.source_type != "donanimhaber_thread",
+                (ScrapedTopic.clean_deal_url.isnot(None)) & (ScrapedTopic.clean_deal_url != ""),
+                (ScrapedTopic.deal_url.isnot(None)) & (ScrapedTopic.deal_url != ""),
+            )
+        )
         .order_by(desc(topic_time), desc(ScrapedTopic.scraped_at), desc(ScrapedTopic.id))
         .limit(limit)
     )

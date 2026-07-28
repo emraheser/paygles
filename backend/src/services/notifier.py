@@ -679,6 +679,13 @@ async def send_unsent_topic_notifications(db: AsyncSession, batch_size: int = 10
         .where(ScrapedTopic.deleted_by_user == False)
         .where(
             or_(
+                TargetSite.source_type != "donanimhaber_thread",
+                (ScrapedTopic.clean_deal_url.isnot(None)) & (ScrapedTopic.clean_deal_url != ""),
+                (ScrapedTopic.deal_url.isnot(None)) & (ScrapedTopic.deal_url != ""),
+            )
+        )
+        .where(
+            or_(
                 (ScrapedTopic.deal_title.isnot(None)) & (ScrapedTopic.deal_title != ""),
                 (ScrapedTopic.deal_price.isnot(None)) & (ScrapedTopic.deal_price != ""),
                 (ScrapedTopic.clean_deal_url.isnot(None)) & (ScrapedTopic.clean_deal_url != ""),
@@ -1001,12 +1008,154 @@ def _extract_price_from_hepsiburada_html(html: str) -> str | None:
     return None
 
 
+def _extract_price_from_amazon_html(html: str) -> str | None:
+    """Extract Amazon buybox/current price with strict priority.
+
+    We intentionally avoid generic first-price matches because Amazon pages contain
+    many unrelated prices (variant cards, alternative offers, accessories).
+    """
+    # 1) Main core price block on desktop/mobile layouts.
+    core_blocks: list[str] = []
+    for match in re.finditer(r'id=["\']corePrice[^"\']*["\']', html, flags=re.IGNORECASE):
+        start = max(0, match.start() - 200)
+        end = min(len(html), match.end() + 12000)
+        core_blocks.append(html[start:end])
+    installment_markers = (
+        "taksit",
+        "aylık",
+        "aylik",
+        "/ay",
+        " ay ",
+        "aya varan",
+        "monthly",
+        "per month",
+        "month",
+    )
+
+    def _filtered_block_prices(block: str) -> list[str]:
+        values: list[str] = []
+        for m in re.finditer(
+            r'<span[^>]*class=["\'][^"\']*a-offscreen[^"\']*["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*</span>',
+            block,
+            flags=re.IGNORECASE,
+        ):
+            context = block[max(0, m.start() - 220): min(len(block), m.end() + 220)].lower()
+            if any(marker in context for marker in installment_markers):
+                continue
+            values.append(m.group(1))
+        return values
+
+    for block in core_blocks:
+        candidates = _filtered_block_prices(block)
+        picked = _pick_lowest_normalized_price(candidates)
+        if picked:
+            return picked
+
+    # 2) Price-to-pay accessibility label used in modern Amazon DOM.
+    price_to_pay_labels = re.findall(
+        r'id=["\']apex-pricetopay-accessibility-label["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
+        html,
+        flags=re.IGNORECASE,
+    )
+    picked_price_to_pay = _pick_lowest_normalized_price(price_to_pay_labels)
+    if picked_price_to_pay:
+        return picked_price_to_pay
+
+    # 3) Legacy ids still appear on some products.
+    legacy_patterns = [
+        r'id=["\']priceblock_ourprice["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
+        r'id=["\']price_inside_buybox["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
+        r'id=["\']priceblock_dealprice["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
+    ]
+    for pattern in legacy_patterns:
+        values = re.findall(pattern, html, flags=re.IGNORECASE)
+        picked = _pick_lowest_normalized_price(values)
+        if picked:
+            return picked
+
+    # 4) Fallback: pick first visible offscreen price inside buybox-ish blocks.
+    fallback_blocks = re.findall(
+        r'(?:buybox|apex)[\s\S]{0,8000}',
+        html,
+        flags=re.IGNORECASE,
+    )
+    for block in fallback_blocks:
+        values = _filtered_block_prices(block)
+        picked = _pick_lowest_normalized_price(values)
+        if picked:
+            return picked
+
+    return None
+
+
+def _extract_price_from_vatan_html(html: str) -> str | None:
+    """Extract Vatan product price and ignore installment row amounts."""
+    product_price_candidates = re.findall(
+        r'"productPrice"\s*:\s*"?([0-9][0-9\.,]*)"?', html, flags=re.IGNORECASE
+    )
+
+    data_price_candidates = re.findall(
+        r'data-price="([0-9][0-9\.,]*)"', html, flags=re.IGNORECASE
+    )
+
+    visible_price_candidates = re.findall(
+        r'class="[^"]*(?:product-list__price|product-list__price-value|price)[^"]*"[^>]*>\s*([0-9][0-9\., ]*)',
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    # Filter out obvious installment context (e.g. "2 x 12.998,00 TL").
+    def _filter_installment(values: list[str]) -> list[str]:
+        filtered_values: list[str] = []
+        for value in values:
+            pattern = re.escape(value)
+            match = re.search(pattern, html, flags=re.IGNORECASE)
+            if match:
+                context = html[max(0, match.start() - 180): min(len(html), match.end() + 180)].lower()
+                if any(marker in context for marker in ("taksit", "x ", " x", "aylık", "aylik", "toplam tutar")):
+                    continue
+            filtered_values.append(value)
+        return filtered_values
+
+    # Strict priority: productPrice json -> data-price on detail actions -> visible price blocks.
+    for group in (
+        _filter_installment(product_price_candidates),
+        _filter_installment(data_price_candidates),
+        _filter_installment(visible_price_candidates),
+    ):
+        if not group:
+            continue
+        picked = _pick_lowest_normalized_price(group)
+        if picked:
+            return picked
+
+    # Final fallback if all filters removed candidates.
+    for group in (product_price_candidates, data_price_candidates, visible_price_candidates):
+        if not group:
+            continue
+        picked = _pick_lowest_normalized_price(group)
+        if picked:
+            return picked
+
+    return None
+
+
 def _extract_price_from_html(html: str, page_url: str | None = None) -> str | None:
     hostname = (urlparse(page_url).hostname or "").lower() if page_url else ""
     if "n11.com" in hostname:
         n11_price = _extract_price_from_n11_html(html)
         if n11_price:
             return n11_price
+
+    if "vatanbilgisayar.com" in hostname:
+        vatan_price = _extract_price_from_vatan_html(html)
+        if vatan_price:
+            return vatan_price
+
+    if "amazon." in hostname:
+        amazon_price = _extract_price_from_amazon_html(html)
+        if amazon_price:
+            return amazon_price
 
     if "hepsiburada.com" in hostname:
         hepsiburada_price = _extract_price_from_hepsiburada_html(html)
@@ -1043,6 +1192,55 @@ def _extract_price_from_html(html: str, page_url: str | None = None) -> str | No
         if normalized:
             return normalized
     return None
+
+
+def _is_out_of_stock_page(html: str, page_url: str | None = None) -> bool:
+    """Detect clear out-of-stock pages for supported stores.
+
+    This currently targets Amazon, where product pages can keep showing historical
+    price-like values even when the item is not purchasable.
+    """
+    if not html or not page_url:
+        return False
+
+    hostname = (urlparse(page_url).hostname or "").lower()
+    if "amazon." not in hostname:
+        return False
+
+    # Ignore script blobs while checking phrases; Amazon embeds translation maps
+    # that may contain "mevcut değil" even for purchasable variants.
+    no_script_html = re.sub(r"<script[\\s\\S]*?</script>", " ", html, flags=re.IGNORECASE)
+    haystack = no_script_html.lower()
+
+    has_real_purchase_cta = any(
+        re.search(pattern, haystack, flags=re.IGNORECASE)
+        for pattern in (
+            r"<input[^>]+id=[\"']add-to-cart-button[\"']",
+            r"<input[^>]+name=[\"']submit\.add-to-cart[\"']",
+            r"<button[^>]+id=[\"']add-to-cart-button[\"']",
+            r"<input[^>]+id=[\"']buy-now-button[\"']",
+            r"<button[^>]+id=[\"']buy-now-button[\"']",
+        )
+    )
+
+    unavailable_markers = (
+        "currently unavailable",
+        "temporarily out of stock",
+        "this item is currently unavailable",
+        "stokta yok",
+        "gecici olarak stokta yok",
+        "şu anda mevcut değil",
+        "su anda mevcut degil",
+    )
+    has_unavailable_phrase = any(marker in haystack for marker in unavailable_markers)
+
+    # Conservative rule for tracking accuracy:
+    # if there is no real purchasable CTA in buybox, treat as unavailable.
+    if not has_real_purchase_cta:
+        return True
+
+    # If both real CTA and unavailability phrase coexist, trust CTA.
+    return has_unavailable_phrase and not has_real_purchase_cta
 
 
 def _generate_with_ai(prompt: str, max_tokens: int = 60) -> str | None:
@@ -1138,7 +1336,11 @@ def _fetch_page_metadata(
                     return _fetch_page_metadata(canonical, source_title=source_title, _depth=1)
             return None, None, None
 
-        price = _extract_price_from_html(html, final_url)
+        is_out_of_stock = _is_out_of_stock_page(html, final_url)
+        if is_out_of_stock:
+            logger.info("Out-of-stock page detected for %s", final_url)
+
+        price = None if is_out_of_stock else _extract_price_from_html(html, final_url)
         match = _TITLE_RE.search(html)
         if match:
             from html import unescape
@@ -1151,7 +1353,7 @@ def _fetch_page_metadata(
             if source_title and (_is_coupon_or_campaign_title(source_title) or _is_discussion_title(source_title)):
                 if _is_non_product_title(title) or _is_homepage_or_junk_url(final_url):
                     return None, None, normalize_deal_url(final_url)
-            if not price:
+            if not price and not is_out_of_stock:
                 price = _extract_price_with_ai(title, html)
             if re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", title or ""):
                 return None, price, normalize_deal_url(final_url)

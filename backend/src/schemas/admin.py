@@ -1,5 +1,15 @@
 from datetime import datetime
+from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def _looks_like_donanimhaber_thread(url: str) -> bool:
+    parsed = urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower()
+    if "donanimhaber.com" not in host:
+        return False
+    path = (parsed.path or "").lower().rstrip("/")
+    return "--" in path
 
 class TargetSiteBase(BaseModel):
     name: str = Field(..., max_length=100)
@@ -13,7 +23,14 @@ class TargetSiteBase(BaseModel):
 
     @model_validator(mode="after")
     def check_web_selectors(self):
+        if self.source_type not in {"web", "telegram", "manual", "donanimhaber_thread"}:
+            raise ValueError("Geçersiz kaynak türü")
+
         if self.source_type == "web":
+            # Backward-compatible fallback: let DH thread URLs work even when source_type
+            # is accidentally left as web in the UI.
+            if _looks_like_donanimhaber_thread(self.url):
+                return self
             if not self.topic_list_selector or not self.title_selector or not self.link_selector:
                 raise ValueError("Web kaynakları için topic_list_selector, title_selector ve link_selector zorunludur")
         return self

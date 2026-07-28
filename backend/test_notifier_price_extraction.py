@@ -1,6 +1,6 @@
 import unittest
 
-from src.services.notifier import _extract_price_from_html
+from src.services.notifier import _extract_price_from_html, _is_out_of_stock_page
 
 
 class HepsiburadaPriceExtractionTests(unittest.TestCase):
@@ -86,6 +86,110 @@ class HepsiburadaPriceExtractionTests(unittest.TestCase):
         self.assertEqual(
             _extract_price_from_html(html, "https://www.hepsiburada.com/test-urun"),
             "58.999",
+        )
+
+
+class AmazonAvailabilityTests(unittest.TestCase):
+    def test_detects_out_of_stock_when_unavailable_and_no_cart_button(self):
+        html = '''
+        <html>
+          <body>
+            <div id="availability">
+              <span>Currently unavailable.</span>
+            </div>
+          </body>
+        </html>
+        '''
+        self.assertTrue(
+            _is_out_of_stock_page(html, "https://www.amazon.com.tr/dp/B0D2YBQQ1P")
+        )
+
+    def test_does_not_mark_out_of_stock_when_add_to_cart_exists(self):
+        html = '''
+        <html>
+          <body>
+            <div id="availability"><span>Currently unavailable.</span></div>
+            <input id="add-to-cart-button" type="submit" value="Sepete Ekle" />
+          </body>
+        </html>
+        '''
+        self.assertFalse(
+            _is_out_of_stock_page(html, "https://www.amazon.com.tr/dp/B0D2YBQQ1P")
+        )
+
+    def test_marks_out_of_stock_when_only_shortcut_text_contains_add_to_cart(self):
+        html = '''
+        <html>
+          <body>
+            <script>
+              var t = "secilen renkte su anda mevcut degil";
+            </script>
+            <div class="keyboard-shortcut" data-target="#add-to-cart-button">Sepete ekle</div>
+          </body>
+        </html>
+        '''
+        self.assertTrue(
+            _is_out_of_stock_page(html, "https://www.amazon.com.tr/dp/B0D2YBQQ1P")
+        )
+
+
+    class AmazonPriceExtractionTests(unittest.TestCase):
+      def test_prefers_core_price_over_variant_tile_price(self):
+        html = '''
+        <div class="twister-slot"><span class="a-offscreen">55.099,00TL</span></div>
+        <div id="corePrice_feature_div">
+          <span class="a-price apex-pricetopay-value">
+          <span class="a-offscreen">52.766,01TL</span>
+          </span>
+        </div>
+        '''
+        self.assertEqual(
+          _extract_price_from_html(html, "https://www.amazon.com.tr/dp/B0DT4S32PY"),
+          "52.766,01",
+        )
+
+      def test_uses_apex_accessibility_label_when_core_block_missing(self):
+        html = '''
+        <span id="apex-pricetopay-accessibility-label" class="aok-offscreen"> 52.766,01 TL </span>
+        <div class="variant-card"><span class="a-offscreen">55.099,00TL</span></div>
+        '''
+        self.assertEqual(
+          _extract_price_from_html(html, "https://www.amazon.com.tr/dp/B0DT4S32PY"),
+          "52.766,01",
+        )
+
+      def test_ignores_installment_values_in_core_price_block(self):
+        html = '''
+        <div id="corePrice_feature_div">
+          <span class="a-offscreen">13.999,00TL</span>
+          <span class="installment">9 aya varan taksitlerle aylık</span>
+          <span class="a-offscreen">669,00TL</span>
+        </div>
+        '''
+        self.assertEqual(
+          _extract_price_from_html(html, "https://www.amazon.com.tr/dp/B0GKGN3FYT"),
+          "13.999,00",
+        )
+
+
+class VatanPriceExtractionTests(unittest.TestCase):
+    def test_prefers_product_price_over_installment_rows(self):
+        html = '''
+        <script>
+          var product = {"productPrice":"25996"};
+        </script>
+        <a class="detail-btn" data-price="25.996"></a>
+        <table>
+          <tr><td>2 x 12.998,00 TL</td></tr>
+          <tr><td>Toplam Tutar 25.996,00 TL</td></tr>
+        </table>
+        '''
+        self.assertEqual(
+            _extract_price_from_html(
+                html,
+                "https://www.vatanbilgisayar.com/acer-swift-go-oled-evo-core-ultra-7-155u-16gb-512gb-ssd-14inc-w11.html",
+            ),
+            "25.996",
         )
 
 

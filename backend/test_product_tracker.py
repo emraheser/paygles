@@ -34,11 +34,13 @@ class ProductTrackerPriceTests(unittest.TestCase):
         self.assertEqual(format_price_cents(1_249_990), "12.499,90 TL")
         self.assertEqual(format_price_cents(99_900), "999 TL")
 
-    def test_notifies_only_for_a_new_low_below_initial_price(self):
-        self.assertFalse(should_send_price_drop(100_000, 100_000, None))
-        self.assertTrue(should_send_price_drop(100_000, 95_000, None))
-        self.assertFalse(should_send_price_drop(100_000, 95_000, 95_000))
-        self.assertTrue(should_send_price_drop(100_000, 90_000, 95_000))
+    def test_notifies_for_new_drop_and_recross_below_initial(self):
+        self.assertFalse(should_send_price_drop(100_000, 100_000, None, 100_000))
+        self.assertTrue(should_send_price_drop(100_000, 95_000, None, 100_000))
+        self.assertFalse(should_send_price_drop(100_000, 95_000, 95_000, 95_000))
+        self.assertTrue(should_send_price_drop(100_000, 90_000, 95_000, 95_000))
+        self.assertTrue(should_send_price_drop(100_000, 95_000, 95_000, 101_000))
+        self.assertTrue(should_send_price_drop(100_000, 97_000, 95_000, 95_000))
 
     def test_builds_encoded_akakce_search_url(self):
         self.assertEqual(

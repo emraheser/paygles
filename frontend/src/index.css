@@ -103,8 +103,8 @@
 }
 
 .section-hero-title {
-  font-size: clamp(1.8rem, 3.4vw, 2.6rem);
-  line-height: 1.06;
+  font-size: clamp(1.45rem, 2.15vw, 2.05rem);
+  line-height: 1.12;
   font-weight: 800;
 }
 

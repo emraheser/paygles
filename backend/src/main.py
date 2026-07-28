@@ -8,10 +8,11 @@ from sqlalchemy import inspect, text
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s - %(message)s")
 
-from src.database import engine, Base
+from src.database import engine, Base, AsyncSessionLocal
 from src.api.admin import router as admin_router
 from src.api.dashboard import router as dashboard_router
 from src.services.scheduler import start_scheduler, stop_scheduler
+from src.services.source_config import sync_target_sites_from_env
 
 TOPIC_ID_REGEX = re.compile(r"\.(\d+)(?:/)?$")
 
@@ -147,6 +148,11 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "sqlite":
             await conn.run_sync(_run_schema_upgrades)
+
+    async with AsyncSessionLocal() as session:
+        touched = await sync_target_sites_from_env(session)
+        if touched:
+            await session.commit()
         
     # Start APScheduler Jobs
     await start_scheduler()

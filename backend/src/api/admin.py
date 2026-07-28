@@ -2,11 +2,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
 
 from src.database import get_db
 from src.models.domain import TargetSite, AppSetting, ScrapedTopic, KeywordFilter, AllowedDomain
-from src.schemas.admin import TargetSiteCreate, TargetSiteResponse, TargetSiteUpdate, AppSettingResponse, AppSettingUpdate, KeywordFilterCreate, KeywordFilterResponse, ManualLinkCreate, AllowedDomainCreate, AllowedDomainResponse
+from src.schemas.admin import TargetSiteResponse, AppSettingResponse, AppSettingUpdate, KeywordFilterCreate, KeywordFilterResponse, ManualLinkCreate, AllowedDomainCreate, AllowedDomainResponse
 from src.services.scheduler import refresh_scheduler_interval
 from src.services.notifier import normalize_deal_url
 
@@ -19,38 +18,26 @@ async def list_target_sites(db: DbDep):
     result = await db.execute(select(TargetSite))
     return result.scalars().all()
 
-@router.post("/sites", response_model=TargetSiteResponse, status_code=status.HTTP_201_CREATED)
-async def create_target_site(site: TargetSiteCreate, db: DbDep):
-    new_site = TargetSite(**site.model_dump())
-    db.add(new_site)
-    await db.commit()
-    await db.refresh(new_site)
-    return new_site
+@router.post("/sites", status_code=status.HTTP_403_FORBIDDEN)
+async def create_target_site(db: DbDep):
+    raise HTTPException(
+        status_code=403,
+        detail="Kaynaklar ENV'den yönetiliyor. backend/.env içindeki TARGET_SITES_JSON değerini güncelleyin.",
+    )
 
-@router.put("/sites/{site_id}", response_model=TargetSiteResponse)
-async def update_target_site(site_id: int, site: TargetSiteUpdate, db: DbDep):
-    result = await db.execute(select(TargetSite).where(TargetSite.id == site_id))
-    db_site = result.scalar_one_or_none()
-    if not db_site:
-        raise HTTPException(status_code=404, detail="Site not found")
-        
-    for key, value in site.model_dump().items():
-        setattr(db_site, key, value)
-        
-    await db.commit()
-    await db.refresh(db_site)
-    return db_site
+@router.put("/sites/{site_id}", status_code=status.HTTP_403_FORBIDDEN)
+async def update_target_site(site_id: int, db: DbDep):
+    raise HTTPException(
+        status_code=403,
+        detail="Kaynaklar ENV'den yönetiliyor. backend/.env içindeki TARGET_SITES_JSON değerini güncelleyin.",
+    )
 
 @router.delete("/sites/{site_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_target_site(site_id: int, db: DbDep):
-    result = await db.execute(select(TargetSite).where(TargetSite.id == site_id))
-    db_site = result.scalar_one_or_none()
-    if not db_site:
-        raise HTTPException(status_code=404, detail="Site not found")
-        
-    await db.execute(delete(ScrapedTopic).where(ScrapedTopic.site_id == site_id))
-    await db.delete(db_site)
-    await db.commit()
+    raise HTTPException(
+        status_code=403,
+        detail="Kaynaklar ENV'den yönetiliyor. backend/.env içindeki TARGET_SITES_JSON değerini güncelleyin.",
+    )
 
 @router.get("/settings", response_model=list[AppSettingResponse])
 async def list_settings(db: DbDep):

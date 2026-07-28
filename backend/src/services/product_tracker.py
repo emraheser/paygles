@@ -106,12 +106,20 @@ def should_send_price_drop(
     initial_price_cents: int,
     current_price_cents: int,
     last_notified_price_cents: int | None,
+    previous_price_cents: int | None,
 ) -> bool:
     if current_price_cents >= initial_price_cents:
         return False
+
+    # If price was at/above the baseline and dropped below it again, notify.
+    if previous_price_cents is not None and previous_price_cents >= initial_price_cents:
+        return True
+
+    # Under baseline, notify whenever price changed from last notified value.
+    # This keeps the baseline anchored to initial_price_cents as requested.
     return (
         last_notified_price_cents is None
-        or current_price_cents < last_notified_price_cents
+        or current_price_cents != last_notified_price_cents
     )
 
 
@@ -153,6 +161,8 @@ async def check_tracked_product(
         await db.flush()
         return False
 
+    previous_price_cents = product.current_price_cents
+
     product.title = snapshot.title
     product.store_name = snapshot.store_name
     product.current_price_cents = snapshot.price_cents
@@ -167,6 +177,7 @@ async def check_tracked_product(
         product.initial_price_cents,
         snapshot.price_cents,
         product.last_notified_price_cents,
+        previous_price_cents,
     )
     if notify:
         sent = await telegram_notifier.send_price_drop(
