@@ -1,6 +1,9 @@
 backend/.env
 backend/paygles-env/
 backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+*.pyc
 backend/.pytest_cache/
 backend/*.db
 backend/*.db-shm
