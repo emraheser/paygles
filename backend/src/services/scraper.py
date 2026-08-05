@@ -13,7 +13,7 @@ from sqlalchemy import or_
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 
-from src.models.domain import TargetSite, ScrapedTopic
+from src.models.domain import TargetSite, ScrapedTopic, KeywordFilter
 from src.services.notifier import (
     normalize_deal_url,
     build_deal_metadata_for_new_record,
@@ -51,9 +51,17 @@ TR_CHAR_MAP.update(str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU"))
 class ScraperService:
     def __init__(self, db: AsyncSession):
         self.db = db
+        self._active_keywords: list[str] = []
+
+    async def _load_active_keywords(self) -> list[str]:
+        result = await self.db.execute(
+            select(KeywordFilter.keyword).where(KeywordFilter.is_active == True)
+        )
+        return [row[0] for row in result.all()]
 
     async def run_all_sites(self):
         """Scrape all active web sites"""
+        self._active_keywords = await self._load_active_keywords()
         result = await self.db.execute(
             select(TargetSite).where(
                 TargetSite.is_active == True,
@@ -108,6 +116,10 @@ class ScraperService:
 
                 if not title or not url:
                     continue
+
+                if self._is_donanimarsivi_source(site) and self._active_keywords:
+                    if not self._title_matches_keywords(title, self._active_keywords):
+                        continue
 
                 if url.startswith("#") or url.startswith("javascript:"):
                     continue
@@ -180,7 +192,9 @@ class ScraperService:
                     # Fallback: extract price from forum title if page didn't have one
                     if not deal_price and _can_use_title_price_fallback(title):
                         topic.deal_price = _extract_price_from_text(title)
-                elif _is_discussion_title(title):
+                else:
+                    # A forum-only URL exposes the source without giving users a
+                    # usable product destination, so keep web ingestion link-first.
                     continue
 
                 if (
@@ -209,7 +223,22 @@ class ScraperService:
                 site_name,
             )
 
-    @staticmethod
+    
+    def _is_donanimarsivi_source(site: TargetSite) -> bool:
+        host = (urlparse((site.url or "").strip()).hostname or "").lower()
+        return "donanimarsivi" in host
+
+    
+    def _title_matches_keywords(cls, title: str, keywords: list[str]) -> bool:
+        normalized_title = cls._normalize_text(title)
+        for keyword in keywords:
+            if not keyword:
+                continue
+            if cls._normalize_text(keyword) in normalized_title:
+                return True
+        return False
+
+    
     def _looks_like_donanimhaber_thread_url(url: str) -> bool:
         parsed = urlparse((url or "").strip())
         host = (parsed.hostname or "").lower()
@@ -495,38 +524,15 @@ class ScraperService:
 
     @staticmethod
     def _extract_first_external_link_from_markdown_block(block: str, site_domain: str) -> str | None:
-        blocked_host_fragments = (
-            "donanimhaber.com",
-            "google.com",
-            "gstatic.com",
-            "virgul.com",
-        )
-        image_suffixes = (
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".gif",
-            ".webp",
-            ".svg",
-        )
-
-        for raw_url in re.findall(r"https?://[^\s\)\]\"']+", block or ""):
-            parsed = urlparse(raw_url)
-            hostname = (parsed.hostname or "").lower()
-            if not hostname:
-                continue
-            if hostname.endswith(site_domain):
-                continue
-            if any(fragment in hostname for fragment in blocked_host_fragments):
-                continue
-            if parsed.path.lower().endswith(image_suffixes):
-                continue
-            return raw_url
+        content_block = ScraperService._extract_donanimhaber_markdown_content(block)
+        for raw_url in re.findall(r"https?://[^\s\)\]\"']+", content_block):
+            if ScraperService._is_donanimhaber_deal_link(raw_url, site_domain):
+                return raw_url
         return None
 
     @staticmethod
     def _extract_markdown_post_title(block: str, message_id: str) -> str:
-        text = block or ""
+        text = ScraperService._extract_donanimhaber_markdown_content(block)
         text = re.sub(r"!\[[^\]]*\]\([^\)]*\)", " ", text)
         text = re.sub(r"\[[^\]]*\]\([^\)]*\)", " ", text)
         text = re.sub(r"https?://\S+", " ", text)
@@ -537,6 +543,52 @@ class ScraperService:
         if not text:
             return f"DonanimHaber mesaj {message_id}"
         return text[:500]
+
+    @staticmethod
+    def _extract_donanimhaber_markdown_content(block: str) -> str:
+        content = block or ""
+        boundaries = (
+            '"Beğen")',
+            '"Begen")',
+            '"Favoriye Ekle")',
+            '"Facebook\'ta paylaş")',
+            '"X\'te Paylaş")',
+        )
+        positions = [position for marker in boundaries if (position := content.find(marker)) >= 0]
+        if positions:
+            content = content[:min(positions)]
+        return content
+
+    @staticmethod
+    def _is_donanimhaber_deal_link(url: str, site_domain: str) -> bool:
+        parsed = urlparse((url or "").strip())
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            return False
+
+        blocked_domains = (
+            "donanimhaber.com",
+            "google.com",
+            "gstatic.com",
+            "virgul.com",
+            "twitter.com",
+            "x.com",
+            "facebook.com",
+            "instagram.com",
+            "tiktok.com",
+            "youtube.com",
+            "linkedin.com",
+            "apps.apple.com",
+            "itunes.apple.com",
+            "play.google.com",
+        )
+        if hostname.endswith(site_domain):
+            return False
+        if any(hostname == domain or hostname.endswith(f".{domain}") for domain in blocked_domains):
+            return False
+
+        image_suffixes = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif")
+        return not parsed.path.lower().endswith(image_suffixes)
 
     def _extract_donanimhaber_posts_via_markdown_fallback(
         self,
@@ -576,6 +628,7 @@ class ScraperService:
             .where(TargetSite.source_type == "web")
             .where(TargetSite.is_active == True)
             .where(ScrapedTopic.deleted_by_user == False)
+            .where(ScrapedTopic.domain_skipped == False)
             .where(ScrapedTopic.is_sticky == False)
             .where(
                 or_(
@@ -849,7 +902,21 @@ class ScraperService:
 
     @staticmethod
     def _extract_first_external_link_from_message_node(node, site_domain: str) -> str | None:
-        links = node.css("a[href]")
+        content_node = node
+        for selector in (
+            "[itemprop='text']",
+            ".message-content",
+            ".messageContent",
+            ".message-body",
+            ".msg-content",
+            ".post-content",
+        ):
+            candidates = node.css(selector)
+            if candidates:
+                content_node = candidates[0]
+                break
+
+        links = content_node.css("a[href]")
         for link in links:
             href = (link.attrib.get("href") or "").strip()
             if not href or href.startswith("#") or href.startswith("javascript:"):
@@ -871,11 +938,16 @@ class ScraperService:
                     if redirect_val:
                         decoded = unquote(unescape(redirect_val)).strip()
                         decoded_parsed = urlparse(decoded)
-                        if decoded_parsed.scheme and decoded_parsed.netloc:
+                        if (
+                            decoded_parsed.scheme
+                            and decoded_parsed.netloc
+                            and ScraperService._is_donanimhaber_deal_link(decoded, site_domain)
+                        ):
                             return decoded
                 continue
 
-            return absolute
+            if ScraperService._is_donanimhaber_deal_link(absolute, site_domain):
+                return absolute
         return None
 
     @staticmethod

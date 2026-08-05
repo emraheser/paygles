@@ -344,11 +344,19 @@ _DISCUSSION_PHRASES = (
 
 _SOCIAL_IMAGE_HOSTS = (
     "instagram.com",
+    "facebook.com",
+    "twitter.com",
+    "x.com",
     "imgur.com",
     "ibb.co",
     "i.hizliresim.com",
     "hizliresim.com",
     "resimlink.com",
+    "apps.apple.com",
+    "itunes.apple.com",
+    "play.google.com",
+    "store.donanimhaber.com",
+    "maps.app.goo.gl",
 )
 
 
@@ -373,6 +381,16 @@ def _is_coupon_or_campaign_title(title: str | None) -> bool:
     if not lowered:
         return False
     if any(phrase in lowered for phrase in _COUPON_OR_CAMPAIGN_PHRASES):
+        return True
+    if re.search(
+        r"\b\d[\d.,]*\s*(?:tl|₺|lira)\s+(?:indirim|iade|puan)\b",
+        lowered,
+    ):
+        return True
+    if re.search(
+        r"\b\d[\d.,]*['’]?(?:e|a|ye|ya)\s+\d[\d.,]*\s*(?:tl|₺|lira)?\s*indirim\b",
+        lowered,
+    ):
         return True
     return bool(re.search(r"\b\d{2,5}\s*/\s*\d{2,5}\b", lowered))
 
@@ -417,9 +435,33 @@ def _is_homepage_or_junk_url(url: str) -> bool:
             return True
         if any(hostname == host or hostname.endswith("." + host) for host in _SOCIAL_IMAGE_HOSTS):
             return True
+        if path.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif")):
+            return True
         return False
     except Exception:
         return True
+
+
+def _is_campaign_or_promotion_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        path = (parsed.path or "/").lower()
+        markers = (
+            "/kampanya/",
+            "/kampanyalar/",
+            "/promotion/",
+            "/promosyon/",
+            "/firsat/",
+            "/liste/",
+        )
+        if any(marker in f"{path.rstrip('/')}/" for marker in markers):
+            return True
+        return "amazon." in hostname and path.rstrip("/") == "/b"
+    except Exception:
+        return False
 
 
 def _extract_product_url_from_redirect(redirect_url: str) -> str | None:
@@ -1014,7 +1056,21 @@ def _extract_price_from_amazon_html(html: str) -> str | None:
     We intentionally avoid generic first-price matches because Amazon pages contain
     many unrelated prices (variant cards, alternative offers, accessories).
     """
-    # 1) Main core price block on desktop/mobile layouts.
+    # 1) Exact payable-price component. Unit prices can live in the same core block,
+    # so this must be selected before scanning generic a-offscreen values.
+    price_to_pay_values = re.findall(
+        r'<span[^>]*class=["\'][^"\']*\bapex-pricetopay-value\b[^"\']*["\'][^>]*>'
+        r'\s*<span[^>]*class=["\'][^"\']*\ba-offscreen\b[^"\']*["\'][^>]*>'
+        r'\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*</span>',
+        html,
+        flags=re.IGNORECASE,
+    )
+    for raw_price in price_to_pay_values:
+        normalized = _normalize_price_text(raw_price)
+        if normalized:
+            return normalized
+
+    # 2) Main core price block on desktop/mobile layouts.
     core_blocks: list[str] = []
     for match in re.finditer(r'id=["\']corePrice[^"\']*["\']', html, flags=re.IGNORECASE):
         start = max(0, match.start() - 200)
@@ -1030,6 +1086,15 @@ def _extract_price_from_amazon_html(html: str) -> str | None:
         "monthly",
         "per month",
         "month",
+        "priceperunit",
+        "unit-price",
+        "birim fiyat",
+        "başına",
+        "basina",
+        "par&amp;ccedil;a",
+        "kaps&amp;uuml;l",
+        " / parça",
+        " / kapsül",
     )
 
     def _filtered_block_prices(block: str) -> list[str]:
@@ -1051,7 +1116,7 @@ def _extract_price_from_amazon_html(html: str) -> str | None:
         if picked:
             return picked
 
-    # 2) Price-to-pay accessibility label used in modern Amazon DOM.
+    # 3) Price-to-pay accessibility label used in modern Amazon DOM.
     price_to_pay_labels = re.findall(
         r'id=["\']apex-pricetopay-accessibility-label["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
         html,
@@ -1061,7 +1126,7 @@ def _extract_price_from_amazon_html(html: str) -> str | None:
     if picked_price_to_pay:
         return picked_price_to_pay
 
-    # 3) Legacy ids still appear on some products.
+    # 4) Legacy ids still appear on some products.
     legacy_patterns = [
         r'id=["\']priceblock_ourprice["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
         r'id=["\']price_inside_buybox["\'][^>]*>\s*([0-9][0-9\., ]*)\s*(?:TL|₺)?\s*<',
@@ -1073,7 +1138,7 @@ def _extract_price_from_amazon_html(html: str) -> str | None:
         if picked:
             return picked
 
-    # 4) Fallback: pick first visible offscreen price inside buybox-ish blocks.
+    # 5) Fallback: pick first visible offscreen price inside buybox-ish blocks.
     fallback_blocks = re.findall(
         r'(?:buybox|apex)[\s\S]{0,8000}',
         html,
@@ -1141,6 +1206,11 @@ def _extract_price_from_vatan_html(html: str) -> str | None:
 
 
 def _extract_price_from_html(html: str, page_url: str | None = None) -> str | None:
+    # Promotion and listing pages contain many product-card prices but no single
+    # canonical deal price. Returning one of those values would be misleading.
+    if _is_campaign_or_promotion_url(page_url):
+        return None
+
     hostname = (urlparse(page_url).hostname or "").lower() if page_url else ""
     if "n11.com" in hostname:
         n11_price = _extract_price_from_n11_html(html)

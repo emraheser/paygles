@@ -262,7 +262,7 @@ export function Admin() {
             {showKeywordForm && (
                 <div className="surface-panel space-y-4 rounded-2xl p-6">
                     <p className="text-xs text-stone-500">
-                        Telegram kanallarından sadece bu keywordları içeren mesajlar alınır. Boşsa tüm mesajlar alınır.
+                        Telegram kanalları ve Donanım Arşivi kaynağında sadece bu keywordları içeren içerikler alınır. Boşsa tüm içerikler alınır.
                     </p>
                     <form onSubmit={handleAddKeyword} className="flex items-center gap-2">
                         <Input

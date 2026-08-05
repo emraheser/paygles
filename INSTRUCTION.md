@@ -239,3 +239,19 @@ ollama pull qwen3.5:9b
 
 - Backend UTC-naive datetime tutuyor.
 - Frontend bu değerleri local zamana çevirip relatif gösterim yapıyor.
+
+---
+
+## Copilot QA Agent (Kontrol + Test)
+
+Projeye bir adet Copilot prompt-agent eklendi:
+- .github/prompts/qa-test-agent.prompt.md
+
+Kullanım:
+1. VS Code Copilot Chat aç.
+2. Prompt dosyasını seç veya slash komut olarak qa-test-agent çağır.
+3. Ajan değişiklikleri denetler, test komutlarını çalıştırır ve PASS/FAIL raporu döner.
+
+Not:
+- Backend testleri docker içinde çalıştırıldığı için ortam bağımlılığı daha azdır.
+- Frontend tarafında hızlı regresyon kontrolü için build çıktısı rapora dahil edilir.

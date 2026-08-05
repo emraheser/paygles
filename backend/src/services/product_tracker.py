@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 PRODUCT_CHECK_INTERVAL_SETTING_KEY = "product_check_interval_minutes"
 DEFAULT_PRODUCT_CHECK_INTERVAL_MINUTES = 10
+MIN_PLAUSIBLE_TRACKED_PRICE_PERCENT = 20
 
 STORE_NAMES = {
     "amazon.com.tr": "Amazon",
@@ -123,6 +124,15 @@ def should_send_price_drop(
     )
 
 
+def is_plausible_tracked_price(initial_price_cents: int, candidate_price_cents: int) -> bool:
+    if initial_price_cents <= 0 or candidate_price_cents <= 0:
+        return False
+    return (
+        candidate_price_cents * 100
+        >= initial_price_cents * MIN_PLAUSIBLE_TRACKED_PRICE_PERCENT
+    )
+
+
 async def fetch_product_snapshot(
     url: str,
     source_title: str | None = None,
@@ -158,6 +168,15 @@ async def check_tracked_product(
     except ProductMetadataError as exc:
         product.last_checked_at = checked_at
         product.last_error = str(exc)
+        await db.flush()
+        return False
+
+    if not is_plausible_tracked_price(product.initial_price_cents, snapshot.price_cents):
+        product.last_checked_at = checked_at
+        product.last_error = (
+            "Şüpheli fiyat reddedildi: değer başlangıç fiyatının "
+            f"%{MIN_PLAUSIBLE_TRACKED_PRICE_PERCENT}'sinden düşük."
+        )
         await db.flush()
         return False
 

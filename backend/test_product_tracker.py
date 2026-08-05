@@ -4,6 +4,7 @@ from src.services.notifier import normalize_deal_title
 from src.services.product_tracker import (
     build_akakce_url,
     format_price_cents,
+    is_plausible_tracked_price,
     price_text_to_cents,
     should_send_price_drop,
 )
@@ -41,6 +42,10 @@ class ProductTrackerPriceTests(unittest.TestCase):
         self.assertTrue(should_send_price_drop(100_000, 90_000, 95_000, 95_000))
         self.assertTrue(should_send_price_drop(100_000, 95_000, 95_000, 101_000))
         self.assertTrue(should_send_price_drop(100_000, 97_000, 95_000, 95_000))
+
+    def test_rejects_implausible_parser_drop(self):
+        self.assertFalse(is_plausible_tracked_price(2_549_900, 66_900))
+        self.assertTrue(is_plausible_tracked_price(2_549_900, 2_039_920))
 
     def test_builds_encoded_akakce_search_url(self):
         self.assertEqual(
