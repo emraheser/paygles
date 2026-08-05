@@ -1,9 +1,9 @@
 import unittest
 
 from src.services.notifier import (
-  _can_use_title_price_fallback,
-  _extract_price_from_html,
-  _is_out_of_stock_page,
+    _can_use_title_price_fallback,
+    _extract_price_from_html,
+    _is_out_of_stock_page,
 )
 
 
@@ -137,8 +137,8 @@ class AmazonAvailabilityTests(unittest.TestCase):
         )
 
 
-    class AmazonPriceExtractionTests(unittest.TestCase):
-      def test_prefers_core_price_over_variant_tile_price(self):
+class AmazonPriceExtractionTests(unittest.TestCase):
+    def test_prefers_core_price_over_variant_tile_price(self):
         html = '''
         <div class="twister-slot"><span class="a-offscreen">55.099,00TL</span></div>
         <div id="corePrice_feature_div">
@@ -230,10 +230,10 @@ class CampaignPriceExtractionTests(unittest.TestCase):
             )
         )
 
-      def test_does_not_treat_discount_amount_as_product_price(self):
+    def test_does_not_treat_discount_amount_as_product_price(self):
         self.assertFalse(_can_use_title_price_fallback("ASUS ürünlerinde 500 TL indirim"))
         self.assertFalse(
-          _can_use_title_price_fallback("1.500'e 500 Lira indirim")
+            _can_use_title_price_fallback("1.500'e 500 Lira indirim")
         )
         self.assertTrue(_can_use_title_price_fallback("Oyuncu monitörü 14.999 TL"))
 
